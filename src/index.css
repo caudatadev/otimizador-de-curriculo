@@ -1076,8 +1076,55 @@
     margin-left: 0.25rem;
   }
   
+  /* Language Selector Styles */
+  .language-selector-group {
+    display: flex;
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    padding: 0.25rem;
+    width: 100%;
+    gap: 0.25rem;
+  }
+  
+  .lang-btn {
+    flex: 1;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: var(--color-text-secondary);
+    font-family: var(--font-sans);
+    font-size: 0.85rem;
+    font-weight: 500;
+    padding: 0.65rem 0.5rem;
+    cursor: pointer;
+    transition: var(--transition-smooth);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    user-select: none;
+  }
+  
+  .lang-btn:hover {
+    color: var(--color-text-primary);
+    background: rgba(255, 255, 255, 0.05);
+  }
+  
+  .lang-btn.active {
+    background: var(--color-accent-muted);
+    color: var(--color-accent);
+    font-weight: 600;
+    box-shadow: inset 0 0 10px rgba(230, 126, 34, 0.05);
+  }
+  
   /* Touch target sizes (>= 48px) and mobile inputs */
   @media (max-width: 1024px) {
+    .lang-btn {
+      padding: 0.8rem 0.5rem;
+      font-size: 0.9rem;
+      min-height: 44px;
+    }
     .app-container {
       padding: 1.5rem 1rem;
       gap: 1.5rem;
@@ -1152,3 +1199,135 @@
       font-size: 16pt;
     }
   }
+
+/* Background radial glows */
+.bg-glow-container {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+  background: #09090b;
+}
+
+.bg-glow-blob {
+  position: absolute;
+  width: 600px;
+  height: 600px;
+  border-radius: 50%;
+  filter: blur(140px);
+  opacity: 0.08;
+  mix-blend-mode: screen;
+  pointer-events: none;
+  animation: floatGlow 25s infinite alternate ease-in-out;
+}
+
+.bg-glow-blob-1 {
+  background: radial-gradient(circle, var(--color-accent) 0%, transparent 70%);
+  top: -150px;
+  right: -50px;
+  animation-duration: 35s;
+}
+
+.bg-glow-blob-2 {
+  background: radial-gradient(circle, #8b5cf6 0%, transparent 70%);
+  bottom: -200px;
+  left: -100px;
+  animation-duration: 28s;
+  animation-delay: -7s;
+}
+
+@keyframes floatGlow {
+  0% {
+    transform: translate(0, 0) scale(1);
+  }
+  50% {
+    transform: translate(100px, 80px) scale(1.15);
+  }
+  100% {
+    transform: translate(-50px, -100px) scale(0.9);
+  }
+}
+
+/* Pulsing Glow on Optimize button */
+.btn-pulsing-glow {
+  position: relative;
+  box-shadow: 0 0 12px rgba(230, 126, 34, 0.4);
+  animation: pulseGlowButton 2.5s infinite ease-in-out;
+}
+
+@keyframes pulseGlowButton {
+  0% {
+    box-shadow: 0 0 10px rgba(230, 126, 34, 0.3), 0 0 0 0px rgba(230, 126, 34, 0.3);
+  }
+  70% {
+    box-shadow: 0 0 20px rgba(230, 126, 34, 0.5), 0 0 0 10px rgba(230, 126, 34, 0);
+  }
+  100% {
+    box-shadow: 0 0 10px rgba(230, 126, 34, 0.3), 0 0 0 0px rgba(230, 126, 34, 0);
+  }
+}
+
+/* Glassmorphic progress bar */
+.loader-progress-bar-bg {
+  width: 100%;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
+  overflow: hidden;
+  margin-top: 1.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.02);
+}
+
+.loader-progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--color-accent) 0%, #ff8c00 100%);
+  box-shadow: 0 0 8px var(--color-accent);
+  border-radius: 10px;
+  transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Rotate Animation for active step spinner */
+.rotate-spinner {
+  animation: rotateSpinnerAnimation 1.5s linear infinite;
+}
+
+@keyframes rotateSpinnerAnimation {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Orbs and animations in loading container */
+.spinner-container-premium {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100px;
+  height: 100px;
+  margin: 0 auto;
+}
+
+.spinner-outer-ring {
+  position: absolute;
+  width: 80px;
+  height: 80px;
+  border: 3px solid transparent;
+  border-top-color: var(--color-accent);
+  border-bottom-color: #8b5cf6;
+  border-radius: 50%;
+  animation: rotateSpinnerAnimation 2s linear infinite;
+}
+
+.spinner-inner-glow {
+  width: 40px;
+  height: 40px;
+  background: radial-gradient(circle, var(--color-accent) 0%, transparent 70%);
+  border-radius: 50%;
+  filter: blur(4px);
+  animation: pulseGlow 1.5s infinite alternate ease-in-out;
+}
+

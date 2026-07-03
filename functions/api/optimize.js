@@ -3,19 +3,26 @@
  * Route: POST /api/optimize
  */
 
+const rateLimitMap = new Map();
+
 const SYSTEM_PROMPT = `
 Você é um especialista em Recrutamento e Seleção e especialista em otimização de Currículos para Sistemas ATS (Applicant Tracking Systems) como Gupy, Greenhouse, Taleo e Workday.
 Sua tarefa é analisar o currículo fornecido e a descrição da vaga fornecida, e otimizar o currículo do usuário de forma estratégica.
 
+DIRETRIZ DE REALISMO E DESIGN PARA HUMANOS E ROBÔS (ATS):
+O currículo otimizado deve ser estruturado de forma a atingir a pontuação máxima no rastreador ATS (utilizando palavras-chave e a estrutura correta), mas deve ser escrito com um tom natural, fluido e profissional para o recrutador humano. Evite repetições exaustivas ou artificiais de termos técnicos. O currículo deve contar uma história profissional sólida (storytelling), focada em conquistas e impacto real, baseada exclusivamente na história de carreira verídica fornecida no currículo original.
+
 DIRETRIZ CRÍTICA ABSOLUTA:
 - NÃO INCLUA NENHUM EMOJI em nenhuma parte da resposta JSON final. Toda a saída de texto deve ser limpa e profissional.
 
-Diretrizes Críticas para Passar no ATS:
-1. Palavras-Chave Importantes: Identifique as habilidades técnicas (Hard Skills), ferramentas, metodologias e certificações exigidas na descrição da vaga. Insira essas palavras-chave de forma natural no resumo profissional, na seção de habilidades e nos bullet points de experiências.
-2. Método STAR nos Bullet Points: Para cada experiência profissional, reescreva ou crie bullet points focados em conquistas usando o modelo STAR (Situação, Tarefa, Ação, Resultado). Comece cada frase com um verbo de ação forte. Insira métricas/dados quantitativos sempre que possível.
-3. Adaptação de Termos: Alinhe a nomenclatura dos cargos e das habilidades com os termos mais utilizados na vaga.
-4. Tom e Estilo: Adapte o tom do currículo de acordo com a opção selecionada.
-5. Integridade e Verdade: Otimize a escrita e destaque o que é relevante, mas NÃO invente experiências ou diplomas falsos. Se o usuário não possui uma habilidade técnica crucial exigida pela vaga, coloque um aviso na seção 'atsReport' (keywordsMissing).
+Diretrizes Críticas para Passar no ATS (Fidelidade e Realismo):
+1. Palavras-Chave Importantes: Identifique as habilidades técnicas (Hard Skills), ferramentas, metodologias e certificações exigidas na descrição da vaga. Insira essas palavras-chave de forma natural e orgânica no resumo profissional, na seção de habilidades e nos bullet points, mas APENAS se elas já existirem ou puderem ser logicamente fundamentadas nas experiências e habilidades reais descritas no currículo original. NÃO invente conhecimentos nem sobrecarregue o texto artificialmente (sem keyword stuffing).
+2. Acrônimos e Termos por Extenso: Sempre que aplicável, utilize a forma abreviada (acrônimo/sigla) junto com o termo por extenso (Ex: "SEO (Search Engine Optimization)", "TI (Tecnologia da Informação)", "API (Application Programming Interface)") para maximizar as chances de indexação em qualquer termo buscado pelo recrutador no ATS.
+3. Método STAR nos Bullet Points: Para cada experiência profissional, reescreva ou crie bullet points focados em conquistas usando o modelo STAR (Situação, Tarefa, Ação, Resultado). Comece cada frase com um verbo de ação forte. Descreva a ação e o benefício gerado (Ex: "reduzindo custos e otimizando a velocidade"), mantendo um tom realista, fluido e profissional.
+4. Nomenclatura e Sinônimos de Cargos: Alinhe o título dos cargos e as habilidades com os termos mais utilizados na vaga (ex: se a vaga pede "React.js" e o currículo diz "React", utilize "React.js"; se o cargo histórico for um sinônimo direto equivalente, você pode ajustar, por exemplo, de "Programador" para "Desenvolvedor de Software"). NUNCA altere o nível de senioridade ou a área de atuação do cargo real (ex: não mude "Estagiário" para "Líder de Projetos", ou "Suporte Técnico" para "Engenheiro de Dados"). O currículo deve ser 100% verídico.
+5. Tom e Estilo: Adapte o tom do currículo de acordo com a opção selecionada. Se a opção for "Iniciante / Entry-Level", o currículo deve focar no potencial de crescimento, projetos acadêmicos/pessoais, facilidade de aprendizado e habilidades fundamentais, sem forçar senioridades, liderança de grandes times ou anos excessivos de experiência que o candidato não possui (evitando parecer um executivo sênior).
+6. Idioma de Saída: O currículo deve ser otimizado e gerado sempre em Português do Brasil (PT-BR). As chaves do JSON devem permanecer sempre em inglês exatamente como especificado na estrutura abaixo.
+7. Realismo Absoluto e Veracidade (Sem Mentiras): O currículo final deve refletir de maneira fiel o histórico real do cliente. NÃO invente, sob qualquer pretexto, nenhuma experiência de trabalho, empresa, cargo, período de trabalho, projeto, competência técnica ou formação acadêmica que não conste explicitamente no currículo original. É terminantemente proibido criar qualificações artificiais para bater com as exigências da vaga. Se o candidato não possuir uma habilidade crucial solicitada na vaga, liste-a obrigatoriamente e exclusivamente no relatório de compatibilidade (atsReport.keywordsMissing), para que ele saiba da falta, sem poluir o currículo com informações falsas.
 
 Você DEVE retornar a resposta EXATAMENTE no formato JSON com a estrutura especificada.
 
@@ -78,6 +85,47 @@ A estrutura do JSON de saída deve ser:
 export async function onRequestPost(context) {
   const { request, env } = context;
 
+  // Retrieve client IP for Rate Limiting
+  const ip = request.headers.get("CF-Connecting-IP") || "anonymous";
+  const now = Date.now();
+
+  // Inline cleanup of expired entries in rateLimitMap to prevent memory leaks
+  for (const [key, val] of rateLimitMap.entries()) {
+    if (now > val.resetTime) {
+      rateLimitMap.delete(key);
+    }
+  }
+
+  // Rate Limiting Logic: 5 optimizations per minute per IP
+  const rateLimitDuration = 60000; // 1 minute
+  const maxRequests = 5;
+
+  let clientLimit = rateLimitMap.get(ip);
+  if (!clientLimit) {
+    clientLimit = { count: 1, resetTime: now + rateLimitDuration };
+    rateLimitMap.set(ip, clientLimit);
+  } else {
+    if (now > clientLimit.resetTime) {
+      clientLimit.count = 1;
+      clientLimit.resetTime = now + rateLimitDuration;
+    } else {
+      clientLimit.count += 1;
+    }
+  }
+
+  if (clientLimit.count > maxRequests) {
+    return new Response(
+      JSON.stringify({ error: "Limite de requisições excedido. Por favor, aguarde um minuto antes de tentar novamente." }),
+      {
+        status: 429,
+        headers: { 
+          "Content-Type": "application/json",
+          "Retry-After": Math.ceil((clientLimit.resetTime - now) / 1000).toString()
+        }
+      }
+    );
+  }
+
   // Retrieve the secret API key from Cloudflare Environment variables
   const apiKey = env.GEMINI_API_KEY;
 
@@ -92,7 +140,7 @@ export async function onRequestPost(context) {
   }
 
   try {
-    const { resumeText, jobDescription, tone, customInstructions } = await request.json();
+    const { resumeText, jobDescription, tone, customInstructions, targetLanguage } = await request.json();
 
     if (!resumeText || !jobDescription) {
       return new Response(
@@ -118,8 +166,9 @@ export async function onRequestPost(context) {
     Parâmetros de Otimização:
     - Tom do currículo: ${tone || "Técnico e Direto"}
     - Instruções Customizadas Adicionais: ${customInstructions || "Nenhuma específica."}
+    - Idioma de Destino do Currículo Otimizado: ${targetLanguage === 'en' ? "Inglês (EN)" : "Português do Brasil (PT-BR)"}
 
-    Gere o currículo otimizado no formato JSON especificado no prompt do sistema.
+    Gere o currículo otimizado no formato JSON especificado no prompt do sistema, traduzindo e adaptando o conteúdo textual inteiramente para o idioma de destino solicitado.
     `;
 
     // Make direct HTTP request to Gemini REST API (gemini-3.1-flash-lite)

@@ -20,7 +20,7 @@ import {
   Activity,
   Info
 } from 'lucide-react';
-import { optimizeResume, getMockOptimizedResume } from './services/gemini';
+import { optimizeResume, getMockOptimizedResume, translateResumeObj } from './services/gemini';
 import './App.css'; // Vite css is empty, styles loaded from index.css
 
 // Custom Glassmorphic Dropdown Select Component
@@ -69,6 +69,110 @@ function CustomSelect({ value, onChange, options, placeholder }) {
   );
 }
 
+// Circular SVG Score Gauge Component with Easing Animation
+function CircularScoreGauge({ score }) {
+  const [animatedScore, setAnimatedScore] = useState(0);
+  
+  useEffect(() => {
+    setAnimatedScore(0);
+    const duration = 1000; // 1s animation duration
+    const startTime = performance.now();
+    
+    let frameId;
+    const animate = (time) => {
+      const elapsed = time - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      
+      // Easing out quadratic formula
+      const easeProgress = progress * (2 - progress);
+      setAnimatedScore(Math.round(easeProgress * score));
+      
+      if (progress < 1) {
+        frameId = requestAnimationFrame(animate);
+      }
+    };
+    
+    frameId = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(frameId);
+  }, [score]);
+
+  const radius = 35;
+  const circumference = 2 * Math.PI * radius;
+  const strokeDashoffset = circumference - (animatedScore / 100) * circumference;
+  
+  const getScoreColor = (val) => {
+    if (val >= 80) return "#10b981"; // Emerald green
+    if (val >= 50) return "#f59e0b"; // Amber orange
+    return "#ef4444"; // Red
+  };
+
+  const color = getScoreColor(score);
+
+  return (
+    <div style={{ 
+      display: 'flex', 
+      alignItems: 'center', 
+      gap: '1.25rem', 
+      background: 'rgba(255, 255, 255, 0.02)', 
+      padding: '1.25rem', 
+      borderRadius: 'var(--radius-sm)', 
+      border: '1px solid var(--color-border)', 
+      marginBottom: '1.5rem',
+      boxShadow: '0 4px 15px rgba(0,0,0,0.05)'
+    }}>
+      <div style={{ position: 'relative', width: '84px', height: '84px', flexShrink: 0 }}>
+        <svg width="84" height="84" viewBox="0 0 90 90" style={{ transform: 'rotate(-90deg)' }}>
+          <circle
+            cx="45"
+            cy="45"
+            r={radius}
+            fill="transparent"
+            stroke="rgba(255, 255, 255, 0.05)"
+            strokeWidth="7"
+          />
+          <circle
+            cx="45"
+            cy="45"
+            r={radius}
+            fill="transparent"
+            stroke={color}
+            strokeWidth="7"
+            strokeDasharray={circumference}
+            strokeDashoffset={strokeDashoffset}
+            strokeLinecap="round"
+            style={{ transition: 'stroke-dashoffset 0.05s ease-out' }}
+          />
+        </svg>
+        <div style={{
+          position: 'absolute',
+          top: '50%',
+          left: '50%',
+          transform: 'translate(-50%, -50%)',
+          fontSize: '1.2rem',
+          fontWeight: 800,
+          color: color
+        }}>
+          {animatedScore}%
+        </div>
+      </div>
+      
+      <div style={{ flexGrow: 1 }}>
+        <h4 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 700, color: 'var(--color-text-primary)' }}>
+          {score >= 80 ? "Excelente Compatibilidade ATS!" : score >= 50 ? "Compatibilidade Regular" : "Melhorias Necessárias"}
+        </h4>
+        <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.75rem', color: 'var(--color-text-secondary)', lineHeight: '1.4' }}>
+          {score >= 80 
+            ? "Seu currículo atende às principais exigências descritas na vaga e possui alta chance de superar os filtros automatizados de triagem."
+            : score >= 50 
+              ? "Para aumentar suas chances no ATS, inclua algumas das palavras-chave sugeridas e quantifique conquistas nas experiências de trabalho."
+              : "Recomendamos fortemente reescrever partes do currículo focando nas competências essenciais que estão ausentes."
+          }
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   // --- STATE ---
   // Read API Key directly from Vite env configuration in production
@@ -83,10 +187,12 @@ function App() {
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [currentStep, setCurrentStep] = useState(0); // 0: Idle, 1: Analyzing, 2: Tailoring CV, 3: Completed
   const [optimizedCv, setOptimizedCv] = useState(null);
+  const [originalPortugueseCv, setOriginalPortugueseCv] = useState(null);
   
   // Customization Options
   const [tone, setTone] = useState('Técnico e Profissional');
   const [customInstructions, setCustomInstructions] = useState('');
+  const [targetLanguage, setTargetLanguage] = useState('pt'); // 'pt' (default) or 'en'
   const [activeTemplate, setActiveTemplate] = useState('modern'); // modern default matches screenshot // classic, modern, minimal
   
   // UI states
@@ -107,6 +213,14 @@ function App() {
       return () => clearTimeout(timer);
     }
   }, [toastMessage]);
+
+  useEffect(() => {
+    if (errorMsg) {
+      setToastMessage(null);
+      const timer = setTimeout(() => setErrorMsg(null), 6000);
+      return () => clearTimeout(timer);
+    }
+  }, [errorMsg]);
 
   // (saveApiKey removed as telemetry dashboard handles API configuration silently via .env)
 
@@ -140,18 +254,33 @@ function App() {
     }
   };
 
-  const triggerFileSelect = () => {
-    fileInputRef.current.click();
-  };
+
 
   const processFile = async (file) => {
+    setErrorMsg(null);
+
+    // 1. Validação de Formato do Arquivo (Tipo)
+    const allowedExtensions = ['.pdf', '.docx', '.txt'];
+    const fileName = file.name.toLowerCase();
+    const isAllowed = allowedExtensions.some(ext => fileName.endsWith(ext));
+    if (!isAllowed) {
+      setErrorMsg("Formato de arquivo não suportado. Por favor, envie arquivos .pdf, .docx ou .txt.");
+      return;
+    }
+
+    // 2. Validação de Tamanho Máximo (5MB)
+    const maxSizeBytes = 5 * 1024 * 1024;
+    if (file.size > maxSizeBytes) {
+      setErrorMsg("O tamanho do arquivo excede o limite máximo de 5MB.");
+      return;
+    }
+
     setUploadedFile({
       name: file.name,
       size: (file.size / 1024).toFixed(1) + ' KB',
       type: file.type
     });
     setIsParsingFile(true);
-    setErrorMsg(null);
 
     const reader = new FileReader();
     
@@ -181,6 +310,7 @@ function App() {
             setResumeText(fullText);
             showToast('Currículo PDF importado com sucesso!');
           } catch (err) {
+            console.error("[ERRO PARSER PDF] Falha crítica ao extrair texto do PDF:", err);
             setErrorMsg(err.message || 'Falha ao ler o PDF.');
           } finally {
             setIsParsingFile(false);
@@ -203,6 +333,7 @@ function App() {
             setResumeText(result.value);
             showToast('Currículo Word importado com sucesso!');
           } catch (err) {
+            console.error("[ERRO PARSER DOCX] Falha crítica ao ler arquivo Word:", err);
             setErrorMsg(err.message || 'Falha ao ler arquivo Word (.docx).');
           } finally {
             setIsParsingFile(false);
@@ -221,7 +352,7 @@ function App() {
         reader.readAsText(file);
       }
     } catch (err) {
-      console.error(err);
+      console.error("[ERRO LEITURA ARQUIVO] Falha ao processar arquivo genérico:", err);
       setErrorMsg('Erro de leitura do arquivo.');
       setIsParsingFile(false);
     }
@@ -236,15 +367,36 @@ function App() {
   };
 
   // --- OPTIMIZATION ORCHESTRATION ---
-  const handleOptimize = async () => {
-    if (!resumeText.trim()) {
-      setErrorMsg("Por favor, anexe seu currículo ou insira o texto do currículo.");
+  const handleOptimize = async (langOverride) => {
+    const trimmedResume = resumeText.trim();
+    const trimmedJob = jobDescription.trim();
+
+    // 1. Validação de Preenchimento Obrigatório
+    if (!trimmedResume || !trimmedJob) {
+      setErrorMsg("Por favor, preencha ambos os campos antes de continuar.");
       return;
     }
-    if (!jobDescription.trim()) {
-      setErrorMsg("Por favor, cole a descrição da vaga desejada.");
+
+    // 2. Filtro de Tamanho Mínimo de Texto
+    if (trimmedResume.length < 150 || trimmedJob.length < 150) {
+      setErrorMsg("O texto colado parece curto demais. Certifique-se de colar o conteúdo completo do currículo e da vaga para uma boa otimização.");
       return;
     }
+
+    // 3. Filtro de Texto Copiado Errado (Detecção de Links / Conteúdo Idêntico)
+    const urlPattern = /^(https?:\/\/)?([\da-z.-]+)\.([a-z.]{2,6})([\/\w .-]*)*\/?$/i;
+    const isOnlyUrl = urlPattern.test(trimmedJob) || (trimmedJob.startsWith('http') && !trimmedJob.includes(' '));
+    if (isOnlyUrl) {
+      setErrorMsg("Por favor, cole o texto copiado da descrição da vaga, e não o link dela.");
+      return;
+    }
+
+    if (trimmedResume === trimmedJob) {
+      setErrorMsg("Os dois campos contêm o mesmo texto.");
+      return;
+    }
+
+    const lang = langOverride || targetLanguage;
 
     setIsOptimizing(true);
     setMobileTab('output'); // Auto-switch tab on mobile so they see results/loader
@@ -255,31 +407,71 @@ function App() {
     const stepTimer1 = setTimeout(() => setCurrentStep(2), 1500); // Tailoring CV details
 
     try {
-      // Calls optimizeResume which will automatically route to proxy or client SDK
+      // Calls optimizeResume always in Portuguese ('pt')
       const result = await optimizeResume({
         resumeText,
         jobDescription,
         tone,
         customInstructions,
+        targetLanguage: 'pt',
         apiKey
       });
       
       clearTimeout(stepTimer1);
       setCurrentStep(3); // Completed!
       
-      setTimeout(() => {
-        setOptimizedCv(result);
-        setIsOptimizing(false);
-        setCurrentStep(0);
-        setOptimizationsCount(prev => prev + 1); // Increment dashboard optimizations counter
-        showToast('Currículo otimizado com sucesso!');
-      }, 1000);
+      setOriginalPortugueseCv(result);
+      
+      if (lang === 'en') {
+        setCurrentStep(2); // Translating...
+        const translated = await translateResumeObj(result, 'en');
+        setTimeout(() => {
+          setOptimizedCv(translated);
+          setIsOptimizing(false);
+          setCurrentStep(0);
+          setOptimizationsCount(prev => prev + 1);
+          showToast('Currículo otimizado e traduzido com sucesso!');
+        }, 1000);
+      } else {
+        setTimeout(() => {
+          setOptimizedCv(result);
+          setIsOptimizing(false);
+          setCurrentStep(0);
+          setOptimizationsCount(prev => prev + 1);
+          showToast('Currículo otimizado com sucesso!');
+        }, 1000);
+      }
       
     } catch (err) {
+      console.error("[ERRO OTIMIZAÇÃO GEMINI] Falha ao otimizar currículo via IA. Detalhes:", err);
       clearTimeout(stepTimer1);
       setErrorMsg(err.message || "Erro durante a otimização com Inteligência Artificial.");
       setIsOptimizing(false);
       setCurrentStep(0);
+    }
+  };
+
+  const handleLanguageChange = async (lang) => {
+    setTargetLanguage(lang);
+    if (originalPortugueseCv) {
+      setIsOptimizing(true);
+      setCurrentStep(2); // Traduzindo/Processando...
+      try {
+        if (lang === 'en') {
+          const translated = await translateResumeObj(originalPortugueseCv, 'en');
+          setOptimizedCv(translated);
+          showToast('Currículo traduzido para inglês!');
+        } else {
+          setOptimizedCv(originalPortugueseCv);
+          showToast('Currículo restaurado para português!');
+        }
+      } catch (err) {
+        console.error("[ERRO TRADUÇÃO CÓDIGO] Falha na tradução dinâmica do currículo via Google Translate gtx. Detalhes:", err);
+        setErrorMsg("Erro ao traduzir currículo.");
+      } finally {
+        setIsOptimizing(false);
+        setCurrentStep(0);
+      }
     }
   };
 
@@ -294,7 +486,7 @@ function App() {
     const stepTimer2 = setTimeout(() => setCurrentStep(3), 2400);
 
     try {
-      const result = await getMockOptimizedResume(resumeText, jobDescription);
+      const result = await getMockOptimizedResume(resumeText, jobDescription, targetLanguage);
       
       setTimeout(() => {
         setOptimizedCv(result);
@@ -380,23 +572,23 @@ function App() {
     txt += `========================================================================\n`;
     txt += `${personalInfo.location || ""} | ${personalInfo.phone || ""} | ${personalInfo.email || ""}\n`;
     if (personalInfo.linkedin) txt += `LinkedIn: ${personalInfo.linkedin}\n`;
-    if (personalInfo.website) txt += `Site: ${personalInfo.website}\n`;
+    if (personalInfo.website) txt += `${targetLanguage === 'en' ? 'Website' : 'Site'}: ${personalInfo.website}\n`;
     txt += `\n`;
     
     if (objective) {
       txt += `=========================================\n`;
-      txt += `OBJETIVO\n`;
+      txt += `${targetLanguage === 'en' ? 'OBJECTIVE' : 'OBJETIVO'}\n`;
       txt += `=========================================\n`;
       txt += `${objective}\n\n`;
     }
     
     txt += `=========================================\n`;
-    txt += `RESUMO PROFISSIONAL\n`;
+    txt += `${targetLanguage === 'en' ? 'PROFESSIONAL SUMMARY' : 'RESUMO PROFISSIONAL'}\n`;
     txt += `=========================================\n`;
     txt += `${summary}\n\n`;
     
     txt += `=========================================\n`;
-    txt += `HABILIDADES\n`;
+    txt += `${targetLanguage === 'en' ? 'SKILLS' : 'HABILIDADES'}\n`;
     txt += `=========================================\n`;
     skills.forEach(cat => {
       txt += `${cat.category}: ${cat.items.join(", ")}\n`;
@@ -404,7 +596,7 @@ function App() {
     txt += `\n`;
     
     txt += `=========================================\n`;
-    txt += `EXPERIÊNCIA PROFISSIONAL\n`;
+    txt += `${targetLanguage === 'en' ? 'PROFESSIONAL EXPERIENCE' : 'EXPERIÊNCIA PROFISSIONAL'}\n`;
     txt += `=========================================\n`;
     experience.forEach(exp => {
       txt += `${exp.role.toUpperCase()} - ${exp.company} (${exp.location || ""})\n`;
@@ -417,7 +609,7 @@ function App() {
     
     if (education && education.length > 0) {
       txt += `=========================================\n`;
-      txt += `FORMAÇÃO ACADÊMICA\n`;
+      txt += `${targetLanguage === 'en' ? 'EDUCATION' : 'FORMAÇÃO ACADÊMICA'}\n`;
       txt += `=========================================\n`;
       education.forEach(edu => {
         txt += `${edu.degree} - ${edu.institution}\n`;
@@ -427,11 +619,11 @@ function App() {
     
     if (projects && projects.length > 0) {
       txt += `=========================================\n`;
-      txt += `PROJETOS\n`;
+      txt += `${targetLanguage === 'en' ? 'PROJECTS' : 'PROJETOS'}\n`;
       txt += `=========================================\n`;
       projects.forEach(proj => {
         txt += `${proj.name}\n${proj.description}\n`;
-        if (proj.link) txt += `Link: ${proj.link}\n`;
+        if (proj.link) txt += `${targetLanguage === 'en' ? 'Link' : 'Link'}: ${proj.link}\n`;
         txt += `\n`;
       });
     }
@@ -440,7 +632,8 @@ function App() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `${personalInfo.name.replace(/\s+/g, '_')}_Curriculo_ATS_Otimizado.txt`;
+    const filename = `${personalInfo.name.replace(/\s+/g, '_')}_${targetLanguage === 'en' ? 'Optimized_Resume' : 'Curriculo_ATS_Otimizado'}.txt`;
+    link.download = filename;
     link.click();
     showToast('Download do arquivo TXT iniciado!');
   };
@@ -448,26 +641,62 @@ function App() {
   const downloadPdf = () => {
     if (!optimizedCv) return;
     if (!window.html2pdf) {
+      console.error("[ERRO EXPORTAR PDF] Biblioteca html2pdf não encontrada no escopo window.");
       setErrorMsg("Erro: Biblioteca html2pdf não pôde ser carregada. Tente recarregar a página.");
       return;
     }
     
-    showToast('Preparando seu PDF ATS...');
     const element = document.getElementById('cv-preview-sheet');
+    if (!element) {
+      console.error("[ERRO EXPORTAR PDF] Elemento '#cv-preview-sheet' não encontrado no DOM.");
+      setErrorMsg("Erro ao exportar PDF: Visualização não disponível.");
+      return;
+    }
+
+    const container = element.parentElement;
+    // Salvar estilos originais para restauração posterior
+    const originalMaxHeight = container.style.maxHeight;
+    const originalOverflowY = container.style.overflowY;
+    const originalHeight = container.style.height;
+
+    // Expandir temporariamente o container para altura total, prevenindo cortes do html2canvas
+    container.style.maxHeight = 'none';
+    container.style.overflowY = 'visible';
+    container.style.height = 'auto';
+
+    showToast('Preparando seu PDF ATS...');
+    const filename = `${optimizedCv.personalInfo.name.replace(/\s+/g, '_')}_${targetLanguage === 'en' ? 'Optimized_Resume' : 'Curriculo_Otimizado'}.pdf`;
+    
     const opt = {
       margin:       [12, 15, 12, 15], // standard resume margins
-      filename:     `${optimizedCv.personalInfo.name.replace(/\s+/g, '_')}_Curriculo_Otimizado.pdf`,
+      filename:     filename,
       image:        { type: 'jpeg', quality: 0.98 },
-      html2canvas:  { scale: 2, useCORS: true, letterRendering: true, backgroundColor: '#ffffff' },
-      jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' }
+      html2canvas:  { 
+        scale: 2, 
+        useCORS: true, 
+        letterRendering: true, 
+        backgroundColor: '#ffffff',
+        scrollY: 0,
+        scrollX: 0
+      },
+      jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' },
+      pagebreak:    { mode: ['avoid-all', 'css', 'legacy'] }
     };
     
     window.html2pdf().set(opt).from(element).save()
       .then(() => {
+        // Restaurar estilos originais
+        container.style.maxHeight = originalMaxHeight;
+        container.style.overflowY = originalOverflowY;
+        container.style.height = originalHeight;
         showToast('Download do PDF iniciado!');
       })
       .catch(err => {
-        console.error(err);
+        // Restaurar estilos originais em caso de falha
+        container.style.maxHeight = originalMaxHeight;
+        container.style.overflowY = originalOverflowY;
+        container.style.height = originalHeight;
+        console.error("[ERRO EXPORTAR PDF] Falha na geração ou download do PDF via html2pdf:", err);
         setErrorMsg("Erro ao exportar PDF.");
       });
   };
@@ -478,7 +707,8 @@ function App() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `${optimizedCv.personalInfo.name.replace(/\s+/g, '_')}_Curriculo_Otimizado.json`;
+    const filename = `${optimizedCv.personalInfo.name.replace(/\s+/g, '_')}_${targetLanguage === 'en' ? 'Optimized_Resume' : 'Curriculo_Otimizado'}.json`;
+    link.download = filename;
     link.click();
     showToast('Download do arquivo JSON iniciado!');
   };
@@ -502,6 +732,12 @@ function App() {
 
   return (
     <div className="app-container">
+      {/* Background Glow Blobs */}
+      <div className="bg-glow-container">
+        <div className="bg-glow-blob bg-glow-blob-1"></div>
+        <div className="bg-glow-blob bg-glow-blob-2"></div>
+      </div>
+
       {/* Toast Notification */}
       {toastMessage && (
         <div style={{
@@ -527,27 +763,42 @@ function App() {
         </div>
       )}
 
-      {/* Global Error Banner */}
+      {/* Toast Error Notification (Floating Bubble) */}
       {errorMsg && (
         <div style={{
-          background: 'rgba(239, 68, 68, 0.1)',
-          border: '1px solid rgba(239, 68, 68, 0.2)',
-          color: '#f87171',
+          position: 'fixed',
+          top: '20px',
+          right: '20px',
+          background: 'rgba(239, 68, 68, 0.95)',
+          border: '1px solid rgba(239, 68, 68, 0.3)',
+          boxShadow: '0 10px 30px rgba(239, 68, 68, 0.25)',
+          color: '#fff',
           padding: '1rem 1.5rem',
           borderRadius: 'var(--radius-sm)',
+          zIndex: 9999,
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: '1rem',
-          fontSize: '0.875rem'
+          gap: '0.75rem',
+          fontSize: '0.875rem',
+          backdropFilter: 'blur(10px)',
+          animation: 'slideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
+          maxWidth: '400px'
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexGrow: 1 }}>
-            <AlertCircle size={18} />
-            <span>{errorMsg}</span>
-          </div>
+          <AlertCircle size={18} color="#fff" style={{ flexShrink: 0 }} />
+          <span style={{ flexGrow: 1 }}>{errorMsg}</span>
           <button 
             onClick={() => setErrorMsg(null)}
-            style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer' }}
+            style={{ 
+              background: 'none', 
+              border: 'none', 
+              color: '#fff', 
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              padding: 0,
+              marginLeft: '0.5rem',
+              opacity: 0.8
+            }}
           >
             <X size={16} />
           </button>
@@ -561,14 +812,6 @@ function App() {
           <span>Otimizador Inteligente de Currículo ATS</span>
         </div>
         <div className="header-actions">
-          {!apiKey && (
-            <div className="banner-api-warning glass" style={{ padding: '0.5rem 1rem', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-              <Info size={14} color="var(--color-accent)" />
-              <span style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>
-                Modo Demonstração (Simulado)
-              </span>
-            </div>
-          )}
           <button 
             className="btn btn-secondary btn-icon"
             onClick={() => setIsDashboardOpen(true)}
@@ -632,7 +875,6 @@ function App() {
                     onDragOver={handleDragOver}
                     onDragLeave={handleDragLeave}
                     onDrop={handleDrop}
-                    onClick={triggerFileSelect}
                   >
                     <UploadCloud className="upload-icon" size={40} />
                     <div className="upload-text">Arraste seu currículo ou clique para importar</div>
@@ -720,6 +962,7 @@ function App() {
                     options={[
                       { value: 'Técnico e Profissional', label: 'Técnico e Profissional' },
                       { value: 'Corporativo e Formal', label: 'Corporativo e Formal' },
+                      { value: 'Iniciante / Entry-Level', label: 'Iniciante / Entry-Level' },
                       { value: 'Focado em Liderança', label: 'Focado em Liderança' },
                       { value: 'Moderno e Inovador', label: 'Moderno e Inovador' }
                     ]}
@@ -738,36 +981,38 @@ function App() {
                 </div>
               </div>
 
+              {/* Idioma do Currículo Otimizado */}
+              <div className="form-group" style={{ marginTop: '1.25rem', marginBottom: '0.25rem' }}>
+                <label className="form-label">Idioma do Currículo Otimizado</label>
+                <div className="language-selector-group">
+                  <button 
+                    type="button"
+                    className={`lang-btn ${targetLanguage === 'pt' ? 'active' : ''}`}
+                    onClick={() => handleLanguageChange('pt')}
+                  >
+                    Português (PT-BR)
+                  </button>
+                  <button 
+                    type="button"
+                    className={`lang-btn ${targetLanguage === 'en' ? 'active' : ''}`}
+                    onClick={() => handleLanguageChange('en')}
+                  >
+                    Inglês (EN)
+                  </button>
+                </div>
+              </div>
+
               {/* Optimization Trigger Button */}
               <div className="optimize-btn-container" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', alignItems: 'center' }}>
                 <button 
-                  className="btn btn-primary btn-optimize"
-                  onClick={handleOptimize}
+                  className={`btn btn-primary btn-optimize ${(!isOptimizing && !isParsingFile) ? 'btn-pulsing-glow' : ''}`}
+                  onClick={() => handleOptimize()}
                   disabled={isOptimizing || isParsingFile}
                   style={{ opacity: (isOptimizing || isParsingFile) ? 0.6 : 1, width: '100%' }}
                 >
                   <Sparkles size={18} />
                   {isOptimizing ? "Otimizando com IA..." : "Otimizar Currículo para ATS"}
                 </button>
-                
-                <span style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>
-                  Sem chave de API?{' '}
-                  <button 
-                    onClick={handleLoadDemo} 
-                    style={{
-                      background: 'none',
-                      border: 'none',
-                      color: 'var(--color-accent)',
-                      textDecoration: 'underline',
-                      cursor: 'pointer',
-                      fontSize: '0.75rem',
-                      padding: 0
-                    }}
-                    disabled={isOptimizing || isParsingFile}
-                  >
-                    Ver demonstração com dados simulados
-                  </button>
-                </span>
               </div>
             </div>
           </div>
@@ -778,28 +1023,62 @@ function App() {
           
           {isOptimizing ? (
             /* Loading State Panel */
-            <div className="glass loading-container" style={{ flexGrow: 1 }}>
-              <div className="loading-glow-orb"></div>
+            <div className="glass loading-container" style={{ flexGrow: 1, padding: '4rem 2rem' }}>
+              <div className="spinner-container-premium">
+                <div className="spinner-outer-ring"></div>
+                <div className="spinner-inner-glow"></div>
+              </div>
+              
               <div>
-                <h3 style={{ fontFamily: 'var(--font-serif)', fontSize: '1.5rem', marginBottom: '0.5rem' }}>
+                <h3 style={{ fontFamily: 'var(--font-serif)', fontSize: '1.5rem', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}>
+                  <Sparkles size={20} color="var(--color-accent)" />
                   Ajustando Sintonias ATS
                 </h3>
                 <p style={{ color: 'var(--color-text-secondary)', fontSize: '0.9rem' }}>
-                  A Inteligência Artificial está reescrevendo e otimizando seu currículo.
+                  A Inteligência Artificial da CAOZ está reescrevendo e otimizando seu currículo.
                 </p>
               </div>
-              <div className="loading-steps">
+              
+              <div className="loading-steps" style={{ marginTop: '0.5rem' }}>
                 <div className={`loading-step ${currentStep >= 1 ? (currentStep === 1 ? 'active' : 'completed') : ''}`}>
-                  <div className="step-bullet"></div>
-                  <span>Analisando palavras-chave da vaga...</span>
+                  {currentStep > 1 ? (
+                    <CheckCircle2 size={16} color="#10b981" style={{ flexShrink: 0 }} />
+                  ) : currentStep === 1 ? (
+                    <Activity size={16} className="rotate-spinner" color="var(--color-accent)" style={{ flexShrink: 0 }} />
+                  ) : (
+                    <div className="step-bullet" style={{ flexShrink: 0 }}></div>
+                  )}
+                  <span>Analisando requisitos e palavras-chave...</span>
                 </div>
+
                 <div className={`loading-step ${currentStep >= 2 ? (currentStep === 2 ? 'active' : 'completed') : ''}`}>
-                  <div className="step-bullet"></div>
-                  <span>Formatando conquistas no modelo STAR...</span>
+                  {currentStep > 2 ? (
+                    <CheckCircle2 size={16} color="#10b981" style={{ flexShrink: 0 }} />
+                  ) : currentStep === 2 ? (
+                    <Activity size={16} className="rotate-spinner" color="var(--color-accent)" style={{ flexShrink: 0 }} />
+                  ) : (
+                    <div className="step-bullet" style={{ flexShrink: 0 }}></div>
+                  )}
+                  <span>Formatando experiências com método STAR...</span>
                 </div>
+
                 <div className={`loading-step ${currentStep >= 3 ? (currentStep === 3 ? 'active' : 'completed') : ''}`}>
-                  <div className="step-bullet"></div>
-                  <span>Estruturando currículo final...</span>
+                  {currentStep > 3 ? (
+                    <CheckCircle2 size={16} color="#10b981" style={{ flexShrink: 0 }} />
+                  ) : currentStep === 3 ? (
+                    <Activity size={16} className="rotate-spinner" color="var(--color-accent)" style={{ flexShrink: 0 }} />
+                  ) : (
+                    <div className="step-bullet" style={{ flexShrink: 0 }}></div>
+                  )}
+                  <span>Refinando layout e integrando tradução...</span>
+                </div>
+
+                {/* Progress Bar indicator */}
+                <div className="loader-progress-bar-bg">
+                  <div 
+                    className="loader-progress-bar-fill" 
+                    style={{ width: currentStep === 1 ? '33%' : currentStep === 2 ? '66%' : '100%' }}
+                  ></div>
                 </div>
               </div>
             </div>
@@ -845,20 +1124,8 @@ function App() {
               <div className="card-body">
                 {/* Match Score and Feedback box */}
                 {optimizedCv.atsReport && (
-                  <div className="report-box">
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-                      <div className="report-title">
-                        <CheckCircle2 size={16} color="var(--color-accent)" />
-                        Pontuação de Compatibilidade
-                      </div>
-                      <span className="score-badge" style={{
-                        color: getScoreColor(optimizedCv.atsReport.matchScore),
-                        borderColor: getScoreColor(optimizedCv.atsReport.matchScore),
-                        background: `${getScoreColor(optimizedCv.atsReport.matchScore)}10`
-                      }}>
-                        {optimizedCv.atsReport.matchScore}% de Match
-                      </span>
-                    </div>
+                  <div className="report-box" style={{ background: 'none', border: 'none', padding: 0 }}>
+                    <CircularScoreGauge score={optimizedCv.atsReport.matchScore} />
                     
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
                       {/* Keywords lists */}
@@ -1004,7 +1271,7 @@ function App() {
                     {/* Objective */}
                     {optimizedCv.objective && (
                       <div className="cv-section">
-                        <div className="cv-section-title">Objetivo</div>
+                        <div className="cv-section-title">{targetLanguage === 'en' ? 'Objective' : 'Objetivo'}</div>
                         <div 
                           className="cv-summary editable-field" 
                           contentEditable 
@@ -1018,7 +1285,7 @@ function App() {
 
                     {/* Summary */}
                     <div className="cv-section">
-                      <div className="cv-section-title">Resumo Profissional</div>
+                      <div className="cv-section-title">{targetLanguage === 'en' ? 'Professional Summary' : 'Resumo Profissional'}</div>
                       <div 
                         className="cv-summary editable-field" 
                         contentEditable 
@@ -1032,7 +1299,7 @@ function App() {
 
                     {/* Skills */}
                     <div className="cv-section">
-                      <div className="cv-section-title">Habilidades e Competências</div>
+                      <div className="cv-section-title">{targetLanguage === 'en' ? 'Skills & Competencies' : 'Habilidades e Competências'}</div>
                       <div className="cv-skills-grid">
                         {optimizedCv.skills.map((cat, catIdx) => (
                           <div key={catIdx} className="cv-skills-category">
@@ -1057,7 +1324,7 @@ function App() {
 
                     {/* Professional Experience */}
                     <div className="cv-section">
-                      <div className="cv-section-title">Experiência Profissional</div>
+                      <div className="cv-section-title">{targetLanguage === 'en' ? 'Professional Experience' : 'Experiência Profissional'}</div>
                       {optimizedCv.experience.map((exp, expIdx) => (
                         <div key={expIdx} className="cv-item">
                           <div className="cv-item-header">
@@ -1122,7 +1389,7 @@ function App() {
                     {/* Education */}
                     {optimizedCv.education && optimizedCv.education.length > 0 && (
                       <div className="cv-section">
-                        <div className="cv-section-title">Formação Acadêmica</div>
+                        <div className="cv-section-title">{targetLanguage === 'en' ? 'Education' : 'Formação Acadêmica'}</div>
                         {optimizedCv.education.map((edu, eduIdx) => (
                           <div key={eduIdx} className="cv-item" style={{ marginBottom: '0.5rem' }}>
                             <div className="cv-item-header">
@@ -1162,7 +1429,7 @@ function App() {
                     {/* Projects */}
                     {optimizedCv.projects && optimizedCv.projects.length > 0 && (
                       <div className="cv-section">
-                        <div className="cv-section-title">Projetos Destacados</div>
+                        <div className="cv-section-title">{targetLanguage === 'en' ? 'Key Projects' : 'Projetos Destacados'}</div>
                         {optimizedCv.projects.map((proj, projIdx) => (
                           <div key={projIdx} className="cv-item" style={{ marginBottom: '0.5rem' }}>
                             <div className="cv-item-header">
@@ -1309,7 +1576,7 @@ function App() {
                     Modo de Processamento
                   </div>
                   <div style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--color-accent)' }}>
-                    {apiKey ? 'Produção (API Key)' : 'Simulação (Mock)'}
+                    {apiKey ? 'Produção (Cliente SDK)' : 'Produção (Backend Proxy)'}
                   </div>
                 </div>
 

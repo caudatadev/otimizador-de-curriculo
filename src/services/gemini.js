@@ -321,3 +321,222 @@ export async function translateResumeObj(cvObj, targetLanguage) {
 
   return newCvObj;
 }
+
+export async function translateCoverLetterObj(letterObj, targetLanguage) {
+  const fromLang = targetLanguage === 'en' ? 'pt' : 'en';
+  const toLang = targetLanguage === 'en' ? 'en' : 'pt';
+  
+  const t = async (text) => {
+    if (!text || typeof text !== 'string' || !text.trim() || /^\d+$/.test(text)) return text;
+    if (text.includes('@') || text.includes('http') || text.includes('.com')) return text;
+    return await translateText(text, fromLang, toLang);
+  };
+
+  const newLetter = JSON.parse(JSON.stringify(letterObj));
+
+  if (newLetter.recipientInfo) {
+    newLetter.recipientInfo.companyName = await t(newLetter.recipientInfo.companyName);
+    newLetter.recipientInfo.hiringManager = await t(newLetter.recipientInfo.hiringManager);
+    newLetter.recipientInfo.role = await t(newLetter.recipientInfo.role);
+  }
+  if (newLetter.date) {
+    newLetter.date = await t(newLetter.date);
+  }
+  if (newLetter.subject) {
+    newLetter.subject = await t(newLetter.subject);
+  }
+  if (newLetter.salutation) {
+    newLetter.salutation = await t(newLetter.salutation);
+  }
+  if (newLetter.introduction) {
+    newLetter.introduction = await t(newLetter.introduction);
+  }
+  if (newLetter.bodyParagraphs) {
+    newLetter.bodyParagraphs = await Promise.all(
+      newLetter.bodyParagraphs.map(p => t(p))
+    );
+  }
+  if (newLetter.conclusion) {
+    newLetter.conclusion = await t(newLetter.conclusion);
+  }
+  if (newLetter.signOff) {
+    newLetter.signOff = await t(newLetter.signOff);
+  }
+  if (newLetter.signature) {
+    newLetter.signature = await t(newLetter.signature);
+  }
+
+  return newLetter;
+}
+
+/**
+ * Cover Letter System Prompt template designed to write high-converting cover letters.
+ */
+const COVER_LETTER_SYSTEM_PROMPT = `
+Você é um especialista em Recrutamento e Seleção, recolocação profissional sênior e redator profissional de cartas de apresentação (Cover Letters) de alta conversão.
+Sua tarefa é analisar o currículo do usuário e a descrição da vaga fornecida, extrair o perfil profissional do candidato, entender as necessidades e dores da vaga, e redigir uma Carta de Apresentação personalizada de altíssimo impacto estratégico.
+
+DIRETRIZ DE EQUILÍBRIO ATS (ROBÔS) VS. RECRUTADOR (HUMANOS):
+- Foco em Robôs (ATS): Identifique as palavras-chave críticas (hard skills, ferramentas, conceitos técnicos) na descrição da vaga e incorpore-as de forma orgânica e estruturada ao longo da carta. Use formatação limpa e profissional nas seções, garantindo que o texto seja legível e indexável.
+- Foco em Humanos (Recrutadores): Evite repetições exaustivas ou listas artificiais de termos. A carta deve contar uma história profissional convincente (storytelling), demonstrando entusiasmo genuíno, tom confiante e escrita extremamente fluida, humana, articulada e natural. Não utilize frases prontas ou genéricas.
+
+DIRETRIZES DE CONTEÚDO E ESTRUTURA (AIDA AVANÇADO):
+1. Perfil do Candidato: Extraia as principais competências técnicas, experiências práticas e projetos relevantes descritos no currículo original. Não tente resumir todo o currículo; em vez disso, selecione os 2 ou 3 aspectos de maior valor e impacto do perfil que se encaixam como uma luva nos requisitos da vaga.
+2. Alinhamento com a Vaga: Analise a descrição da vaga para entender qual é o maior desafio ou painel de responsabilidades daquela posição. Conecte as dores dessa oportunidade com as soluções práticas que o candidato já entregou em seu histórico real.
+3. Atenção (Attention): Comece com uma saudação formal e parágrafo de introdução focado no interesse explícito pela vaga, declarando a identidade profissional e demonstrando entusiasmo pela cultura ou missão da empresa.
+4. Interesse & Desejo (Interest & Desire): Nos parágrafos do corpo, aprofunde-se no storytelling profissional do candidato. Detalhe conquistas reais e práticas, conectando as competências técnicas e operacionais (extraídas do currículo) aos desafios e à stack de ferramentas exigida pela vaga.
+5. Ação (Action): Conclua com um encerramento polido, agradecendo a consideração e expressando abertura imediata para uma conversa ou entrevista presencial/remota para debater o valor que o candidato pode trazer ao time.
+
+DIRETRIZES CRÍTICAS ABSOLUTAS:
+- REALISMO TOTAL: É proibido sob qualquer pretexto inventar ou extrapolar experiências de trabalho, empresas, cargos, períodos, projetos ou competências técnicas que não constem explicitamente no currículo fornecido. A carta deve ser 100% verídica.
+- NÃO INCLUA NENHUM EMOJI no JSON final para assegurar total profissionalismo perante parsers de e-mail e ATS.
+- O idioma de saída deve ser o solicitado pelo parâmetro 'targetLanguage' (Português do Brasil ou Inglês). As chaves do JSON devem permanecer sempre em inglês exatamente como especificado na estrutura abaixo.
+
+Você DEVE retornar a resposta EXATAMENTE no formato JSON com a estrutura especificada.
+
+A estrutura do JSON de saída deve ser:
+{
+  "personalInfo": {
+    "name": "Nome Completo (do currículo)",
+    "email": "E-mail (do currículo)",
+    "phone": "Telefone (do currículo)",
+    "location": "Cidade/Estado (do currículo)",
+    "linkedin": "LinkedIn (do currículo, se existir)",
+    "website": "Portfólio ou GitHub (do currículo, se existir)"
+  },
+  "recipientInfo": {
+    "companyName": "Nome da Empresa da vaga (se identificável na descrição, senão utilize 'Empresa')",
+    "hiringManager": "Nome do Recrutador/Gestor (se identificável na descrição, senão utilize 'Equipe de Atração de Talentos')",
+    "role": "Título da Vaga (ex: Engenheiro de Dados Júnior)"
+  },
+  "date": "Data atual por extenso (ex: 4 de Julho de 2026)",
+  "subject": "Assunto da Carta (ex: Candidatura à vaga de [Nome da Vaga] na [Empresa])",
+  "salutation": "Saudação formal (ex: Prezada Equipe de Atração de Talentos da [Empresa] ou Prezado(a) [Nome do Gestor],)",
+  "introduction": "Primeiro parágrafo de introdução conectando o candidato à oportunidade, expressando o perfil profissional principal e o entusiasmo com a empresa.",
+  "bodyParagraphs": [
+    "Segundo parágrafo detalhando conquistas, stack e experiências reais do currículo alinhadas de forma profunda às principais exigências técnicas/negócios da vaga.",
+    "Terceiro parágrafo articulando projetos específicos ou habilidades complementares que demonstrem como o candidato ajudará a resolver os desafios imediatos daquela vaga."
+  ],
+  "conclusion": "Quarto parágrafo de fechamento, reiterando o interesse em agendar uma entrevista técnica/comportamental e agradecendo pela atenção.",
+  "signOff": "Fechamento formal (ex: Atenciosamente,)",
+  "signature": "Nome Completo (do candidato)"
+}
+`;
+
+/**
+ * Call the Gemini API to generate a cover letter.
+ */
+export async function generateCoverLetter({ resumeText, jobDescription, tone, customInstructions, targetLanguage = 'pt', apiKey }) {
+  if (apiKey) {
+    const genAI = new GoogleGenerativeAI(apiKey);
+    
+    // Use gemini-3.1-flash-lite for maximum speed and cost-efficiency
+    const model = genAI.getGenerativeModel({
+      model: "gemini-3.1-flash-lite",
+      generationConfig: {
+        responseMimeType: "application/json",
+        temperature: 0.4,
+      }
+    });
+
+    const prompt = `
+    Currículo:
+    """
+    ${resumeText}
+    """
+
+    Descrição da Vaga:
+    """
+    ${jobDescription}
+    """
+
+    Parâmetros da Carta de Apresentação:
+    - Tom: ${tone || "Profissional e Persuasivo"}
+    - Instruções Customizadas Adicionais: ${customInstructions || "Nenhuma específica."}
+    - Idioma de Destino: ${targetLanguage === 'en' ? "Inglês (EN)" : "Português do Brasil (PT-BR)"}
+
+    Gere a Carta de Apresentação em formato JSON contendo a estrutura exata solicitada nas instruções de sistema, traduzindo todo o conteúdo textual do JSON para o idioma de destino solicitado.
+    `;
+
+    try {
+      const result = await model.generateContent({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        systemInstruction: COVER_LETTER_SYSTEM_PROMPT,
+      });
+
+      const responseText = result.response.text();
+      return JSON.parse(responseText);
+    } catch (error) {
+      console.error("[ERRO CLIENT-SDK GEMINI COVER LETTER] Erro na chamada direta da API do Gemini:", error);
+      throw new Error(error.message || "Erro desconhecido ao gerar carta de apresentação no Gemini.");
+    }
+  } else {
+    // If no client-side key, call our secure Cloudflare serverless proxy function (/api/cover-letter)
+    try {
+      const response = await fetch('/api/cover-letter', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ resumeText, jobDescription, tone, customInstructions, targetLanguage })
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        let parsedError;
+        try {
+          parsedError = JSON.parse(errorText);
+        } catch(e) {}
+        throw new Error(parsedError?.error || `Erro no servidor backend proxy (Status: ${response.status})`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error("[ERRO PROXY BACKEND COVER LETTER] Erro ao conectar ou processar requisição no endpoint /api/cover-letter:", error);
+      throw new Error(error.message || "Não foi possível conectar ao servidor de geração de carta.");
+    }
+  }
+}
+
+/**
+ * High-fidelity mock data generator for Cover Letter in Demo Mode
+ */
+export function getMockCoverLetter(resumeText, jobDescription, targetLanguage = 'pt') {
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      resolve({
+        personalInfo: {
+          name: "Cauan Ferreira",
+          email: "cauandatadev@gmail.com",
+          phone: "(11) 91256-4650",
+          location: "Guarulhos, SP",
+          linkedin: "linkedin.com/in/cauan-ferreira",
+          website: "github.com/caudatadev"
+        },
+        recipientInfo: {
+          companyName: "Empresa de Tecnologia S.A.",
+          hiringManager: "Equipe de Recrutamento",
+          role: "Estagiário ou Engenheiro de Dados Júnior"
+        },
+        date: new Date().toLocaleDateString(targetLanguage === 'en' ? 'en-US' : 'pt-BR', { day: 'numeric', month: 'long', year: 'numeric' }),
+        subject: targetLanguage === 'en' ? "Application for Junior Data Engineer / Intern Position" : "Candidatura à vaga de Engenheiro de Dados Júnior / Estagiário",
+        salutation: targetLanguage === 'en' ? "Dear Recruiting Team at Tech Corporation," : "Prezada Equipe de Recrutamento da Empresa de Tecnologia S.A.,",
+        introduction: targetLanguage === 'en' 
+          ? "It is with great enthusiasm that I submit my application for the Junior Data Engineer or Intern opportunity. I follow your company's path of innovation and identify strongly with the focus on building solid data foundations to drive strategic decisions. I believe that my hands-on dedication and skills in data modeling can make an immediate contribution to the team."
+          : "É com grande entusiasmo que apresento minha candidatura para a oportunidade de Estagiário ou Engenheiro de Dados Júnior. Acompanho a trajetória de inovação da empresa e me identifico fortemente com o foco em estruturação de dados sólidos como base para decisões estratégicas. Acredito que minha dedicação prática e habilidades em modelagem de dados podem contribuir de forma imediata para o time.",
+        bodyParagraphs: targetLanguage === 'en' ? [
+          "As an Analysis and Systems Development student, I have focused my technical preparation on the foundation and infrastructure of data. In my volunteer work at the 'Dados Por Todos' community, I structured the relational PostgreSQL database and integrated Supabase services. This hands-on experience allowed me to design efficient tables, apply complex JOINS, and ensure structural integrity of information from end to end.",
+          "In addition to modeling, I developed Python scripts to automate raw data extraction and loading (ETL), saving 75% of the time previously spent on manual spreadsheet processing. I am a pragmatic and results-oriented professional, always looking to understand the data journey to optimize workflows and ensure that clean, reliable data reaches those who need it."
+        ] : [
+          "Como estudante de Análise e Desenvolvimento de Sistemas, tenho focado minha preparação técnica na fundação e na infraestrutura de dados. Em meu trabalho voluntário na comunidade Dados Por Todos, liderei a estruturação do banco de dados relacional PostgreSQL e integrei serviços do Supabase. Essa experiência prática me permitiu desenhar tabelas eficientes, aplicar JOINS complexos e garantir a integridade estrutural das informações de ponta a ponta.",
+          "Além da modelagem, desenvolvi scripts em Python para automatizar a extração e carga de dados brutos (ETL), reduzindo o tempo de ingestão manual de planilhas em 75%. Sou uma pessoa pragmática e focada em resultados, que busca sempre entender a jornada do dado para otimizar processos e garantir que a informação chegue limpa e confiável a quem dela precisa."
+        ],
+        conclusion: targetLanguage === 'en'
+          ? "Thank you for the opportunity to present my professional background. I remain available for a technical interview, where I can demonstrate in detail the automation projects I developed and how I plan to add value to your data team's challenges."
+          : "Agradeço a oportunidade de apresentar meu histórico profissional e fico à disposição para uma entrevista técnica, onde poderei demonstrar em detalhes os projetos de automação que desenvolvi e como pretendo agregar valor aos desafios do time de dados.",
+        signOff: targetLanguage === 'en' ? "Sincerely," : "Atenciosamente,",
+        signature: "Cauan Ferreira"
+      });
+    }, 2000);
+  });
+}

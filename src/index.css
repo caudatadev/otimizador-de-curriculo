@@ -1331,3 +1331,133 @@
   animation: pulseGlow 1.5s infinite alternate ease-in-out;
 }
 
+/* --- VISUALIZER TABS --- */
+.visualizer-tabs {
+  display: flex;
+  gap: 0.25rem;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--color-border);
+  padding: 0.25rem;
+  border-radius: var(--radius-sm);
+}
+
+.visualizer-tab-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: transparent;
+  border: none;
+  color: var(--color-text-secondary);
+  font-size: 0.85rem;
+  font-weight: 500;
+  border-radius: calc(var(--radius-sm) - 2px);
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.visualizer-tab-btn:hover {
+  color: var(--color-text-primary);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.visualizer-tab-btn.active {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--color-accent);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+/* --- COVER LETTER SHEET --- */
+.letter-sheet {
+  text-align: left;
+  line-height: 1.6;
+}
+
+.letter-date {
+  margin-bottom: 1.5rem;
+  font-size: 9.5pt;
+  color: #4a5568;
+}
+
+.letter-recipient {
+  margin-bottom: 2rem;
+  line-height: 1.4;
+  color: #2d3748;
+}
+
+.letter-subject {
+  font-weight: 700;
+  margin-bottom: 1.5rem;
+  color: #1a202c;
+  text-transform: uppercase;
+  font-size: 9.5pt;
+  border-bottom: 1px solid #e2e8f0;
+  padding-bottom: 0.5rem;
+}
+
+.template-classic .letter-subject {
+  border-bottom-color: #cbd5e0;
+  text-transform: none;
+  font-style: italic;
+}
+
+.letter-salutation {
+  margin-bottom: 1rem;
+}
+
+.letter-paragraph {
+  margin-bottom: 1.2rem;
+  text-align: justify;
+  text-justify: inter-word;
+  white-space: pre-wrap;
+}
+
+.letter-signoff {
+  margin-top: 2.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.letter-signature {
+  font-weight: 600;
+  color: #1a202c;
+}
+
+/* --- COVER LETTER EMPTY STATE / CTA --- */
+.generate-cta-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 4rem 2rem;
+  text-align: center;
+  gap: 1.5rem;
+  height: 100%;
+  min-height: 420px;
+}
+
+.generate-cta-icon {
+  color: var(--color-accent);
+  opacity: 0.8;
+  animation: floatAnimation 3s ease-in-out infinite alternate;
+}
+
+@keyframes floatAnimation {
+  0% { transform: translateY(0); }
+  100% { transform: translateY(-10px); }
+}
+
+.cover-letter-badge {
+  display: inline-flex;
+  align-items: center;
+  background: rgba(230, 126, 34, 0.15);
+  color: var(--color-accent);
+  padding: 0.25rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.5rem;
+}
+
+

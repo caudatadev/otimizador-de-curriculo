@@ -20,7 +20,7 @@ import {
   Activity,
   Info
 } from 'lucide-react';
-import { optimizeResume, getMockOptimizedResume, translateResumeObj } from './services/gemini';
+import { optimizeResume, getMockOptimizedResume, translateResumeObj, generateCoverLetter, getMockCoverLetter, translateCoverLetterObj } from './services/gemini';
 import './App.css'; // Vite css is empty, styles loaded from index.css
 
 // Custom Glassmorphic Dropdown Select Component
@@ -173,6 +173,77 @@ function CircularScoreGauge({ score }) {
   );
 }
 
+/**
+ * Strict Input Validation to prevent token wastes on non-sensical, empty or link-only queries.
+ */
+const validateInputTexts = (resume, job) => {
+  const trimmedResume = resume.trim();
+  const trimmedJob = job.trim();
+
+  // 1. Presence check
+  if (!trimmedResume || !trimmedJob) {
+    return "Por favor, preencha ambos os campos (Currículo Original e Descrição da Vaga) antes de prosseguir.";
+  }
+
+  // 2. Minimum length check (150 chars)
+  if (trimmedResume.length < 150 || trimmedJob.length < 150) {
+    return "O texto inserido é curto demais. Um currículo ou vaga real deve possuir pelo menos 150 caracteres para uma análise rica da IA.";
+  }
+
+  // 3. Identical inputs check
+  if (trimmedResume === trimmedJob) {
+    return "O texto do currículo e a descrição da vaga são idênticos. Por favor, forneça os textos correspondentes corretos.";
+  }
+
+  // 4. URL only checks
+  const urlPattern = /^(https?:\/\/)?([\da-z.-]+)\.([a-z.]{2,6})([\/\w .-]*)*\/?$/i;
+  const isResumeUrl = urlPattern.test(trimmedResume) || (trimmedResume.startsWith('http') && !trimmedResume.includes(' '));
+  const isJobUrl = urlPattern.test(trimmedJob) || (trimmedJob.startsWith('http') && !trimmedJob.includes(' '));
+
+  if (isResumeUrl) {
+    return "O campo do currículo contém apenas um link. Copie e cole o texto completo do seu currículo.";
+  }
+  if (isJobUrl) {
+    return "O campo da vaga contém apenas um link. Copie e cole a descrição textual completa da vaga.";
+  }
+
+  // 5. Gibberish / low word count checks
+  const resumeWords = trimmedResume.split(/\s+/).filter(w => w.length > 0);
+  const jobWords = trimmedJob.split(/\s+/).filter(w => w.length > 0);
+
+  if (resumeWords.length < 15) {
+    return "O texto do currículo parece inválido ou contém pouquíssimas palavras. Insira um texto estruturado.";
+  }
+  if (jobWords.length < 15) {
+    return "A descrição da vaga parece inválida ou contém pouquíssimas palavras. Insira a descrição completa.";
+  }
+
+  // 6. Excessive duplicate characters (e.g. repeated keystroke spam like "aaaaaa" or "xxxxx")
+  const consecutiveDupPattern = /(.)\1{7,}/; // same char repeated 8+ times
+  if (consecutiveDupPattern.test(trimmedResume) || consecutiveDupPattern.test(trimmedJob)) {
+    return "Foram detectados caracteres repetidos excessivos (spam/digitação acidental). Por favor, forneça textos válidos.";
+  }
+
+  // 7. Low vocabulary ratio (repetitive words spam)
+  const uniqueWordsResume = new Set(resumeWords.map(w => w.toLowerCase()));
+  const uniqueWordsJob = new Set(jobWords.map(w => w.toLowerCase()));
+
+  if (uniqueWordsResume.size / resumeWords.length < 0.25) {
+    return "O currículo parece conter termos repetidos exaustivamente de forma artificial. Insira um texto legítimo.";
+  }
+  if (uniqueWordsJob.size / jobWords.length < 0.25) {
+    return "A descrição da vaga parece conter termos repetidos exaustivamente de forma artificial. Insira uma descrição de vaga legítima.";
+  }
+
+  // 8. Alphabetic characters presence
+  const letterPattern = /[a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ]/;
+  if (!letterPattern.test(trimmedResume) || !letterPattern.test(trimmedJob)) {
+    return "Os textos informados não possuem caracteres alfabéticos válidos.";
+  }
+
+  return null; // All valid!
+};
+
 function App() {
   // --- STATE ---
   // Read API Key directly from Vite env configuration in production
@@ -188,6 +259,7 @@ function App() {
   const [currentStep, setCurrentStep] = useState(0); // 0: Idle, 1: Analyzing, 2: Tailoring CV, 3: Completed
   const [optimizedCv, setOptimizedCv] = useState(null);
   const [originalPortugueseCv, setOriginalPortugueseCv] = useState(null);
+  const [originalEnglishCv, setOriginalEnglishCv] = useState(null);
   
   // Customization Options
   const [tone, setTone] = useState('Técnico e Profissional');
@@ -202,8 +274,30 @@ function App() {
   const [errorMsg, setErrorMsg] = useState(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [mobileTab, setMobileTab] = useState('input'); // 'input' or 'output' for mobile view
-  const [optimizationsCount, setOptimizationsCount] = useState(0); // Telemetry optimization counter
   
+  // Cover Letter States
+  const [coverLetter, setCoverLetter] = useState(null);
+  const [isGeneratingCoverLetter, setIsGeneratingCoverLetter] = useState(false);
+  const [coverLetterStep, setCoverLetterStep] = useState(0); // 0: Idle, 1: Structuring, 2: Formatting
+  const [activeTab, setActiveTab] = useState('cv'); // 'cv' or 'letter'
+  const [originalPortugueseCoverLetter, setOriginalPortugueseCoverLetter] = useState(null);
+  const [originalEnglishCoverLetter, setOriginalEnglishCoverLetter] = useState(null);
+
+  const [optimizationsCount, setOptimizationsCount] = useState(() => {
+    try {
+      const saved = localStorage.getItem('caoz_optimizations_total_count');
+      return saved ? parseInt(saved, 10) : 0;
+    } catch (e) {
+      return 0;
+    }
+  });
+  
+  useEffect(() => {
+    try {
+      localStorage.setItem('caoz_optimizations_total_count', optimizationsCount);
+    } catch (e) {}
+  }, [optimizationsCount]);
+
   const fileInputRef = useRef(null);
 
   // --- ACTIONS ---
@@ -368,31 +462,10 @@ function App() {
 
   // --- OPTIMIZATION ORCHESTRATION ---
   const handleOptimize = async (langOverride) => {
-    const trimmedResume = resumeText.trim();
-    const trimmedJob = jobDescription.trim();
-
-    // 1. Validação de Preenchimento Obrigatório
-    if (!trimmedResume || !trimmedJob) {
-      setErrorMsg("Por favor, preencha ambos os campos antes de continuar.");
-      return;
-    }
-
-    // 2. Filtro de Tamanho Mínimo de Texto
-    if (trimmedResume.length < 150 || trimmedJob.length < 150) {
-      setErrorMsg("O texto colado parece curto demais. Certifique-se de colar o conteúdo completo do currículo e da vaga para uma boa otimização.");
-      return;
-    }
-
-    // 3. Filtro de Texto Copiado Errado (Detecção de Links / Conteúdo Idêntico)
-    const urlPattern = /^(https?:\/\/)?([\da-z.-]+)\.([a-z.]{2,6})([\/\w .-]*)*\/?$/i;
-    const isOnlyUrl = urlPattern.test(trimmedJob) || (trimmedJob.startsWith('http') && !trimmedJob.includes(' '));
-    if (isOnlyUrl) {
-      setErrorMsg("Por favor, cole o texto copiado da descrição da vaga, e não o link dela.");
-      return;
-    }
-
-    if (trimmedResume === trimmedJob) {
-      setErrorMsg("Os dois campos contêm o mesmo texto.");
+    // Validação estrita de entradas para economia de tokens
+    const validationError = validateInputTexts(resumeText, jobDescription);
+    if (validationError) {
+      setErrorMsg(validationError);
       return;
     }
 
@@ -421,10 +494,12 @@ function App() {
       setCurrentStep(3); // Completed!
       
       setOriginalPortugueseCv(result);
+      setOriginalEnglishCv(null); // Limpa o cache antigo
       
       if (lang === 'en') {
         setCurrentStep(2); // Translating...
         const translated = await translateResumeObj(result, 'en');
+        setOriginalEnglishCv(translated); // Salva no cache
         setTimeout(() => {
           setOptimizedCv(translated);
           setIsOptimizing(false);
@@ -453,21 +528,80 @@ function App() {
 
   const handleLanguageChange = async (lang) => {
     setTargetLanguage(lang);
-    if (originalPortugueseCv) {
+    const isCvActive = activeTab === 'cv';
+
+    if (originalPortugueseCv || originalPortugueseCoverLetter) {
       setIsOptimizing(true);
       setCurrentStep(2); // Traduzindo/Processando...
       try {
-        if (lang === 'en') {
-          const translated = await translateResumeObj(originalPortugueseCv, 'en');
-          setOptimizedCv(translated);
-          showToast('Currículo traduzido para inglês!');
+        if (isCvActive) {
+          // Prioriza a tradução do currículo
+          if (originalPortugueseCv) {
+            if (lang === 'en') {
+              if (originalEnglishCv) {
+                setOptimizedCv(originalEnglishCv);
+                showToast('Currículo traduzido para inglês (do cache)!');
+              } else {
+                const translated = await translateResumeObj(originalPortugueseCv, 'en');
+                setOriginalEnglishCv(translated);
+                setOptimizedCv(translated);
+                showToast('Currículo traduzido para inglês!');
+              }
+            } else {
+              setOptimizedCv(originalPortugueseCv);
+              showToast('Currículo restaurado para português!');
+            }
+          }
+          // Traduz a carta em segundo plano se ela existir
+          if (originalPortugueseCoverLetter) {
+            if (lang === 'en') {
+              if (originalEnglishCoverLetter) {
+                setCoverLetter(originalEnglishCoverLetter);
+              } else {
+                const translatedLetter = await translateCoverLetterObj(originalPortugueseCoverLetter, 'en');
+                setOriginalEnglishCoverLetter(translatedLetter);
+                setCoverLetter(translatedLetter);
+              }
+            } else {
+              setCoverLetter(originalPortugueseCoverLetter);
+            }
+          }
         } else {
-          setOptimizedCv(originalPortugueseCv);
-          showToast('Currículo restaurado para português!');
+          // Prioriza a tradução da carta de apresentação
+          if (originalPortugueseCoverLetter) {
+            if (lang === 'en') {
+              if (originalEnglishCoverLetter) {
+                setCoverLetter(originalEnglishCoverLetter);
+                showToast('Carta de apresentação traduzida para inglês (do cache)!');
+              } else {
+                const translatedLetter = await translateCoverLetterObj(originalPortugueseCoverLetter, 'en');
+                setOriginalEnglishCoverLetter(translatedLetter);
+                setCoverLetter(translatedLetter);
+                showToast('Carta de apresentação traduzida para inglês!');
+              }
+            } else {
+              setCoverLetter(originalPortugueseCoverLetter);
+              showToast('Carta de apresentação restaurada para português!');
+            }
+          }
+          // Traduz o currículo em segundo plano se ele existir
+          if (originalPortugueseCv) {
+            if (lang === 'en') {
+              if (originalEnglishCv) {
+                setOptimizedCv(originalEnglishCv);
+              } else {
+                const translated = await translateResumeObj(originalPortugueseCv, 'en');
+                setOriginalEnglishCv(translated);
+                setOptimizedCv(translated);
+              }
+            } else {
+              setOptimizedCv(originalPortugueseCv);
+            }
+          }
         }
       } catch (err) {
-        console.error("[ERRO TRADUÇÃO CÓDIGO] Falha na tradução dinâmica do currículo via Google Translate gtx. Detalhes:", err);
-        setErrorMsg("Erro ao traduzir currículo.");
+        console.error("[ERRO TRADUÇÃO DINÂMICA] Falha ao traduzir os documentos:", err);
+        setErrorMsg("Erro ao traduzir o documento selecionado.");
       } finally {
         setIsOptimizing(false);
         setCurrentStep(0);
@@ -507,7 +641,8 @@ function App() {
 
   // --- INLINE EDITING ---
   const handleEdit = (section, field, value) => {
-    setOptimizedCv(prev => {
+    const updateFn = prev => {
+      if (!prev) return prev;
       const updated = { ...prev };
       if (section === 'personalInfo' || section === 'summary' || section === 'objective') {
         if (section === 'personalInfo') {
@@ -519,47 +654,88 @@ function App() {
         }
       }
       return updated;
-    });
+    };
+    setOptimizedCv(updateFn);
+    if (targetLanguage === 'pt') {
+      setOriginalPortugueseCv(updateFn);
+    } else {
+      setOriginalEnglishCv(updateFn);
+    }
   };
 
   const handleSkillEdit = (catIndex, itemIndex, value) => {
-    setOptimizedCv(prev => {
+    const updateFn = prev => {
+      if (!prev) return prev;
       const updated = { ...prev };
       updated.skills[catIndex].items[itemIndex] = value;
       return updated;
-    });
+    };
+    setOptimizedCv(updateFn);
+    if (targetLanguage === 'pt') {
+      setOriginalPortugueseCv(updateFn);
+    } else {
+      setOriginalEnglishCv(updateFn);
+    }
   };
 
   const handleExperienceEdit = (index, field, value) => {
-    setOptimizedCv(prev => {
+    const updateFn = prev => {
+      if (!prev) return prev;
       const updated = { ...prev };
       updated.experience[index][field] = value;
       return updated;
-    });
+    };
+    setOptimizedCv(updateFn);
+    if (targetLanguage === 'pt') {
+      setOriginalPortugueseCv(updateFn);
+    } else {
+      setOriginalEnglishCv(updateFn);
+    }
   };
 
   const handleExperienceBulletEdit = (expIndex, bulletIndex, value) => {
-    setOptimizedCv(prev => {
+    const updateFn = prev => {
+      if (!prev) return prev;
       const updated = { ...prev };
       updated.experience[expIndex].bullets[bulletIndex] = value;
       return updated;
-    });
+    };
+    setOptimizedCv(updateFn);
+    if (targetLanguage === 'pt') {
+      setOriginalPortugueseCv(updateFn);
+    } else {
+      setOriginalEnglishCv(updateFn);
+    }
   };
 
   const handleEducationEdit = (index, field, value) => {
-    setOptimizedCv(prev => {
+    const updateFn = prev => {
+      if (!prev) return prev;
       const updated = { ...prev };
       updated.education[index][field] = value;
       return updated;
-    });
+    };
+    setOptimizedCv(updateFn);
+    if (targetLanguage === 'pt') {
+      setOriginalPortugueseCv(updateFn);
+    } else {
+      setOriginalEnglishCv(updateFn);
+    }
   };
 
   const handleProjectEdit = (index, field, value) => {
-    setOptimizedCv(prev => {
+    const updateFn = prev => {
+      if (!prev) return prev;
       const updated = { ...prev };
       updated.projects[index][field] = value;
       return updated;
-    });
+    };
+    setOptimizedCv(updateFn);
+    if (targetLanguage === 'pt') {
+      setOriginalPortugueseCv(updateFn);
+    } else {
+      setOriginalEnglishCv(updateFn);
+    }
   };
 
   // --- DOWNLOAD / EXPORT ---
@@ -718,9 +894,205 @@ function App() {
       removeFile();
       setJobDescription('');
       setOptimizedCv(null);
+      setCoverLetter(null);
+      setActiveTab('cv');
       setErrorMsg(null);
       setMobileTab('input'); // Reset to input tab on mobile
     }
+  };
+
+  // --- COVER LETTER MANAGEMENT ---
+  const handleGenerateCoverLetter = async () => {
+    const trimmedResume = resumeText.trim();
+    const trimmedJob = jobDescription.trim();
+
+    // Validação estrita de entradas para economia de tokens
+    const validationError = validateInputTexts(trimmedResume, trimmedJob);
+    if (validationError) {
+      setErrorMsg(validationError);
+      return;
+    }
+
+    setIsGeneratingCoverLetter(true);
+    setCoverLetterStep(1); // Analyzing requirements
+    setErrorMsg(null);
+
+    // Simulate steps for beautiful UI feedback
+    const stepTimer = setTimeout(() => setCoverLetterStep(2), 1500); // Structuring paragraphs
+
+    try {
+      let result;
+      // If demo mode is active or no API Key is set and text seems like demo text
+      const isDemo = (optimizedCv && optimizedCv.personalInfo?.name === "Cauan Ferreira") || (!apiKey && resumeText.toLowerCase().includes("cauan"));
+
+      if (isDemo) {
+        result = await getMockCoverLetter(trimmedResume, trimmedJob, 'pt');
+      } else {
+        result = await generateCoverLetter({
+          resumeText: trimmedResume,
+          jobDescription: trimmedJob,
+          tone,
+          customInstructions,
+          targetLanguage: 'pt', // Sempre gera em PT primeiro para guardar o original
+          apiKey
+        });
+      }
+
+      clearTimeout(stepTimer);
+      setCoverLetterStep(3); // Completed!
+
+      setOriginalPortugueseCoverLetter(result);
+      setOriginalEnglishCoverLetter(null); // Limpa o cache antigo
+
+      if (targetLanguage === 'en') {
+        setCoverLetterStep(2); // Traduzindo...
+        const translated = await translateCoverLetterObj(result, 'en');
+        setOriginalEnglishCoverLetter(translated); // Salva no cache
+        setTimeout(() => {
+          setCoverLetter(translated);
+          setIsGeneratingCoverLetter(false);
+          setCoverLetterStep(0);
+          showToast('Carta de apresentação gerada e traduzida para inglês!');
+        }, 1000);
+      } else {
+        setTimeout(() => {
+          setCoverLetter(result);
+          setIsGeneratingCoverLetter(false);
+          setCoverLetterStep(0);
+          showToast('Carta de apresentação gerada com sucesso!');
+        }, 1000);
+      }
+
+    } catch (err) {
+      console.error("[ERRO CARTA GEMINI] Falha ao gerar carta de apresentação via IA. Detalhes:", err);
+      clearTimeout(stepTimer);
+      setErrorMsg(err.message || "Erro durante a geração da Carta de Apresentação com Inteligência Artificial.");
+      setIsGeneratingCoverLetter(false);
+      setCoverLetterStep(0);
+    }
+  };
+
+  const handleCoverLetterEdit = (section, field, value) => {
+    const updateFn = prev => {
+      if (!prev) return prev;
+      const updated = { ...prev };
+      if (section === 'personalInfo') {
+        updated.personalInfo = { ...updated.personalInfo, [field]: value };
+      } else if (section === 'recipientInfo') {
+        updated.recipientInfo = { ...updated.recipientInfo, [field]: value };
+      } else if (section === 'bodyParagraphs') {
+        const newParagraphs = [...updated.bodyParagraphs];
+        newParagraphs[field] = value;
+        updated.bodyParagraphs = newParagraphs;
+      } else {
+        updated[section] = value; // subject, date, salutation, conclusion, signOff, signature
+      }
+      return updated;
+    };
+    setCoverLetter(updateFn);
+    if (targetLanguage === 'pt') {
+      setOriginalPortugueseCoverLetter(updateFn);
+    } else {
+      setOriginalEnglishCoverLetter(updateFn);
+    }
+  };
+
+  const downloadCoverLetterTxt = () => {
+    if (!coverLetter) return;
+    const { personalInfo, recipientInfo, date, subject, salutation, introduction, bodyParagraphs, conclusion, signOff, signature } = coverLetter;
+    
+    let txt = `========================================================================\n`;
+    txt += `                     CARTA DE APRESENTAÇÃO\n`;
+    txt += `========================================================================\n`;
+    txt += `${personalInfo.name.toUpperCase()}\n`;
+    txt += `${personalInfo.location || ""} | ${personalInfo.phone || ""} | ${personalInfo.email || ""}\n`;
+    if (personalInfo.linkedin) txt += `LinkedIn: ${personalInfo.linkedin}\n`;
+    if (personalInfo.website) txt += `GitHub/Site: ${personalInfo.website}\n`;
+    txt += `\n`;
+    txt += `------------------------------------------------------------------------\n`;
+    txt += `${date}\n\n`;
+    txt += `Para:\n`;
+    txt += `${recipientInfo.hiringManager || "Equipe de Recrutamento"}\n`;
+    txt += `${recipientInfo.companyName}\n`;
+    txt += `Vaga de interesse: ${recipientInfo.role}\n`;
+    txt += `------------------------------------------------------------------------\n\n`;
+    txt += `Assunto: ${subject}\n\n`;
+    txt += `${salutation}\n\n`;
+    txt += `${introduction}\n\n`;
+    bodyParagraphs.forEach(p => {
+      txt += `${p}\n\n`;
+    });
+    txt += `${conclusion}\n\n`;
+    txt += `${signOff}\n\n`;
+    txt += `${signature}\n`;
+    
+    const blob = new Blob([txt], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    const filename = `${personalInfo.name.replace(/\s+/g, '_')}_${targetLanguage === 'en' ? 'Cover_Letter' : 'Carta_de_Apresentacao'}.txt`;
+    link.download = filename;
+    link.click();
+    showToast('Download do arquivo TXT iniciado!');
+  };
+
+  const downloadCoverLetterPdf = () => {
+    if (!coverLetter) return;
+    if (!window.html2pdf) {
+      console.error("[ERRO EXPORTAR PDF] Biblioteca html2pdf não encontrada no escopo window.");
+      setErrorMsg("Erro: Biblioteca html2pdf não pôde ser carregada. Tente recarregar a página.");
+      return;
+    }
+    
+    const element = document.getElementById('cover-letter-preview-sheet');
+    if (!element) {
+      console.error("[ERRO EXPORTAR PDF] Elemento '#cover-letter-preview-sheet' não encontrado no DOM.");
+      setErrorMsg("Erro ao exportar PDF: Visualização não disponível.");
+      return;
+    }
+
+    const container = element.parentElement;
+    const originalMaxHeight = container.style.maxHeight;
+    const originalOverflowY = container.style.overflowY;
+    const originalHeight = container.style.height;
+
+    container.style.maxHeight = 'none';
+    container.style.overflowY = 'visible';
+    container.style.height = 'auto';
+
+    showToast('Preparando seu PDF da Carta...');
+    const filename = `${coverLetter.personalInfo.name.replace(/\s+/g, '_')}_${targetLanguage === 'en' ? 'Cover_Letter' : 'Carta_de_Apresentacao'}.pdf`;
+    
+    const opt = {
+      margin:       [15, 20, 15, 20],
+      filename:     filename,
+      image:        { type: 'jpeg', quality: 0.98 },
+      html2canvas:  { 
+        scale: 2, 
+        useCORS: true, 
+        letterRendering: true, 
+        backgroundColor: '#ffffff',
+        scrollY: 0,
+        scrollX: 0
+      },
+      jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' },
+      pagebreak:    { mode: ['avoid-all', 'css', 'legacy'] }
+    };
+    
+    window.html2pdf().set(opt).from(element).save()
+      .then(() => {
+        container.style.maxHeight = originalMaxHeight;
+        container.style.overflowY = originalOverflowY;
+        container.style.height = originalHeight;
+        showToast('Download do PDF iniciado!');
+      })
+      .catch(err => {
+        container.style.maxHeight = originalMaxHeight;
+        container.style.overflowY = originalOverflowY;
+        container.style.height = originalHeight;
+        console.error("[ERRO EXPORTAR PDF] Falha na geração ou download do PDF via html2pdf:", err);
+        setErrorMsg("Erro ao exportar PDF.");
+      });
   };
 
   // --- RENDER HELPERS ---
@@ -1099,10 +1471,27 @@ function App() {
             /* Output Preview & Editing Panel */
             <div className="glass" style={{ display: 'flex', flexDirection: 'column', flexGrow: 1 }}>
               
-              <div className="card-header">
+              <div className="card-header" style={{ flexWrap: 'wrap', gap: '1rem' }}>
                 <div>
                   <h2 className="card-title">2. Visualização & Edição</h2>
                   <div className="card-subtitle">Clique no texto para editar antes de baixar</div>
+                </div>
+
+                <div className="visualizer-tabs">
+                  <button 
+                    className={`visualizer-tab-btn ${activeTab === 'cv' ? 'active' : ''}`}
+                    onClick={() => setActiveTab('cv')}
+                  >
+                    <FileText size={14} />
+                    Currículo
+                  </button>
+                  <button 
+                    className={`visualizer-tab-btn ${activeTab === 'letter' ? 'active' : ''}`}
+                    onClick={() => setActiveTab('letter')}
+                  >
+                    <Sparkles size={14} />
+                    Carta de Apresentação
+                  </button>
                 </div>
                 
                 <div className="output-header-actions">
@@ -1122,8 +1511,10 @@ function App() {
               </div>
 
               <div className="card-body">
-                {/* Match Score and Feedback box */}
-                {optimizedCv.atsReport && (
+                {activeTab === 'cv' ? (
+                  <>
+                    {/* Match Score and Feedback box */}
+                    {optimizedCv.atsReport && (
                   <div className="report-box" style={{ background: 'none', border: 'none', padding: 0 }}>
                     <CircularScoreGauge score={optimizedCv.atsReport.matchScore} />
                     
@@ -1191,7 +1582,7 @@ function App() {
                       
                       <div className="cv-contact">
                         <span>
-                          <strong>Localidade: </strong>
+                          <strong>{targetLanguage === 'en' ? 'Location' : 'Localidade'}: </strong>
                           <span 
                             className="editable-field" 
                             contentEditable 
@@ -1202,7 +1593,7 @@ function App() {
                           </span>
                         </span>
                         <span>
-                          <strong>Contato: </strong>
+                          <strong>{targetLanguage === 'en' ? 'Contact' : 'Contato'}: </strong>
                           <span 
                             className="editable-field" 
                             contentEditable 
@@ -1213,7 +1604,7 @@ function App() {
                           </span>
                         </span>
                         <span>
-                          <strong>E-mail: </strong>
+                          <strong>{targetLanguage === 'en' ? 'Email' : 'E-mail'}: </strong>
                           <span 
                             className="editable-field" 
                             contentEditable 
@@ -1490,9 +1881,305 @@ function App() {
                     <FileJson size={16} />
                   </button>
                 </div>
+              </>
+            ) : (
+              /* --- COVER LETTER TAB --- */
+              <div style={{ display: 'flex', flexDirection: 'column', flexGrow: 1, height: '100%' }}>
+                {isGeneratingCoverLetter ? (
+                  /* Loading State Cover Letter */
+                  <div className="glass loading-container" style={{ flexGrow: 1, padding: '4rem 2rem', background: 'transparent', border: 'none', boxShadow: 'none' }}>
+                    <div className="spinner-container-premium">
+                      <div className="spinner-outer-ring"></div>
+                      <div className="spinner-inner-glow"></div>
+                    </div>
+                    
+                    <div style={{ marginTop: '1.5rem' }}>
+                      <h3 style={{ fontFamily: 'var(--font-serif)', fontSize: '1.5rem', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', textAlign: 'center' }}>
+                        <Sparkles size={20} color="var(--color-accent)" />
+                        Redigindo Carta de Apresentação
+                      </h3>
+                      <p style={{ color: 'var(--color-text-secondary)', fontSize: '0.9rem', textAlign: 'center' }}>
+                        Criando uma apresentação marcante alinhada à descrição da vaga.
+                      </p>
+                    </div>
+                    
+                    <div className="loading-steps" style={{ marginTop: '1.5rem', maxWidth: '320px', margin: '1.5rem auto 0 auto' }}>
+                      <div className={`loading-step ${coverLetterStep >= 1 ? (coverLetterStep === 1 ? 'active' : 'completed') : ''}`}>
+                        {coverLetterStep > 1 ? (
+                          <CheckCircle2 size={16} color="#10b981" style={{ flexShrink: 0 }} />
+                        ) : coverLetterStep === 1 ? (
+                          <Activity size={16} className="rotate-spinner" color="var(--color-accent)" style={{ flexShrink: 0 }} />
+                        ) : (
+                          <div className="step-bullet" style={{ flexShrink: 0 }}></div>
+                        )}
+                        <span>Analisando suas melhores experiências...</span>
+                      </div>
+
+                      <div className={`loading-step ${coverLetterStep >= 2 ? (coverLetterStep === 2 ? 'active' : 'completed') : ''}`}>
+                        {coverLetterStep > 2 ? (
+                          <CheckCircle2 size={16} color="#10b981" style={{ flexShrink: 0 }} />
+                        ) : coverLetterStep === 2 ? (
+                          <Activity size={16} className="rotate-spinner" color="var(--color-accent)" style={{ flexShrink: 0 }} />
+                        ) : (
+                          <div className="step-bullet" style={{ flexShrink: 0 }}></div>
+                        )}
+                        <span>Formatando parágrafos com técnica AIDA...</span>
+                      </div>
+                    </div>
+                  </div>
+                ) : !coverLetter ? (
+                  /* Empty State / CTA for Cover Letter */
+                  <div className="generate-cta-box" style={{ animation: 'fadeIn 0.3s' }}>
+                    <Sparkles className="generate-cta-icon" size={54} />
+                    <div>
+                      <div className="cover-letter-badge">Novo recurso</div>
+                      <h3 style={{ fontFamily: 'var(--font-serif)', fontSize: '1.4rem', marginBottom: '0.5rem' }}>
+                        Criar Carta de Apresentação?
+                      </h3>
+                      <p style={{ color: 'var(--color-text-secondary)', fontSize: '0.9rem', maxWidth: '380px', margin: '0 auto', lineHeight: '1.5' }}>
+                        Gere uma carta de apresentação altamente personalizada e persuasiva com base no seu currículo otimizado e nos requisitos desta vaga.
+                      </p>
+                    </div>
+                    <button 
+                      className="btn btn-primary btn-pulsing-glow" 
+                      onClick={handleGenerateCoverLetter} 
+                      style={{ padding: '0.75rem 2rem', marginTop: '0.5rem' }}
+                    >
+                      <Sparkles size={16} />
+                      Gerar Carta com IA
+                    </button>
+                  </div>
+                ) : (
+                  /* Cover Letter Visualizer & Editor Sheet */
+                  <div style={{ animation: 'fadeIn 0.3s', display: 'flex', flexDirection: 'column', flexGrow: 1 }}>
+                    <div className="cv-preview-container">
+                      <div 
+                        id="cover-letter-preview-sheet" 
+                        className={`resume-sheet template-${activeTemplate} letter-sheet`}
+                        style={{ background: '#ffffff', color: '#1c1c1e', padding: '1rem' }}
+                      >
+                        {/* Candidate Header */}
+                        <div className={`cv-header ${activeTemplate === 'classic' ? '' : 'cv-header-left'}`}>
+                          <div 
+                            className="cv-name editable-field" 
+                            contentEditable 
+                            suppressContentEditableWarning
+                            onBlur={(e) => handleCoverLetterEdit('personalInfo', 'name', e.target.innerText)}
+                          >
+                            {coverLetter.personalInfo.name}
+                          </div>
+                          
+                          <div className="cv-contact">
+                            <span>
+                              <strong>{targetLanguage === 'en' ? 'Location' : 'Localidade'}: </strong>
+                              <span 
+                                className="editable-field" 
+                                contentEditable 
+                                suppressContentEditableWarning
+                                onBlur={(e) => handleCoverLetterEdit('personalInfo', 'location', e.target.innerText)}
+                              >
+                                {coverLetter.personalInfo.location}
+                              </span>
+                            </span>
+                            <span>
+                              <strong>{targetLanguage === 'en' ? 'Contact' : 'Contato'}: </strong>
+                              <span 
+                                className="editable-field" 
+                                contentEditable 
+                                suppressContentEditableWarning
+                                onBlur={(e) => handleCoverLetterEdit('personalInfo', 'phone', e.target.innerText)}
+                              >
+                                {coverLetter.personalInfo.phone}
+                              </span>
+                            </span>
+                            <span>
+                              <strong>{targetLanguage === 'en' ? 'Email' : 'E-mail'}: </strong>
+                              <span 
+                                className="editable-field" 
+                                contentEditable 
+                                suppressContentEditableWarning
+                                onBlur={(e) => handleCoverLetterEdit('personalInfo', 'email', e.target.innerText)}
+                              >
+                                {coverLetter.personalInfo.email}
+                              </span>
+                            </span>
+                            {coverLetter.personalInfo.linkedin && (
+                              <span>
+                                <strong>LinkedIn: </strong>
+                                <span 
+                                  className="editable-field" 
+                                  contentEditable 
+                                  suppressContentEditableWarning
+                                  onBlur={(e) => handleCoverLetterEdit('personalInfo', 'linkedin', e.target.innerText)}
+                                >
+                                  {coverLetter.personalInfo.linkedin}
+                                </span>
+                              </span>
+                            )}
+                            {coverLetter.personalInfo.website && (
+                              <span>
+                                <strong>{targetLanguage === 'en' ? 'Portfolio' : 'Portfólio'}: </strong>
+                                <span 
+                                  className="editable-field" 
+                                  contentEditable 
+                                  suppressContentEditableWarning
+                                  onBlur={(e) => handleCoverLetterEdit('personalInfo', 'website', e.target.innerText)}
+                                >
+                                  {coverLetter.personalInfo.website}
+                                </span>
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Date */}
+                        <div 
+                          className="letter-date editable-field" 
+                          contentEditable 
+                          suppressContentEditableWarning
+                          onBlur={(e) => handleCoverLetterEdit('date', null, e.target.innerText)}
+                        >
+                          {coverLetter.date}
+                        </div>
+
+                        {/* Recipient Details */}
+                        <div className="letter-recipient" style={{ fontSize: '9.5pt' }}>
+                          <div>
+                            <strong>{targetLanguage === 'en' ? 'To' : 'Para'}: </strong>
+                            <span 
+                              className="editable-field" 
+                              contentEditable 
+                              suppressContentEditableWarning
+                              onBlur={(e) => handleCoverLetterEdit('recipientInfo', 'hiringManager', e.target.innerText)}
+                            >
+                              {coverLetter.recipientInfo.hiringManager}
+                            </span>
+                          </div>
+                          <div>
+                            <span 
+                              className="editable-field" 
+                              contentEditable 
+                              suppressContentEditableWarning
+                              onBlur={(e) => handleCoverLetterEdit('recipientInfo', 'companyName', e.target.innerText)}
+                            >
+                              {coverLetter.recipientInfo.companyName}
+                            </span>
+                          </div>
+                          <div style={{ marginTop: '0.25rem' }}>
+                            {targetLanguage === 'en' ? 'Position' : 'Vaga'}: <span 
+                              className="editable-field" 
+                              contentEditable 
+                              suppressContentEditableWarning
+                              onBlur={(e) => handleCoverLetterEdit('recipientInfo', 'role', e.target.innerText)}
+                            >
+                              {coverLetter.recipientInfo.role}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Subject */}
+                        <div 
+                          className="letter-subject editable-field" 
+                          contentEditable 
+                          suppressContentEditableWarning
+                          onBlur={(e) => handleCoverLetterEdit('subject', null, e.target.innerText)}
+                        >
+                          {coverLetter.subject}
+                        </div>
+
+                        {/* Salutation */}
+                        <div 
+                          className="letter-salutation editable-field" 
+                          contentEditable 
+                          suppressContentEditableWarning
+                          onBlur={(e) => handleCoverLetterEdit('salutation', null, e.target.innerText)}
+                          style={{ fontWeight: '500' }}
+                        >
+                          {coverLetter.salutation}
+                        </div>
+
+                        {/* Introduction */}
+                        <div 
+                          className="letter-paragraph editable-field" 
+                          contentEditable 
+                          suppressContentEditableWarning
+                          onBlur={(e) => handleCoverLetterEdit('introduction', null, e.target.innerText)}
+                        >
+                          {coverLetter.introduction}
+                        </div>
+
+                        {/* Body Paragraphs */}
+                        {coverLetter.bodyParagraphs.map((p, idx) => (
+                          <div 
+                            key={idx}
+                            className="letter-paragraph editable-field" 
+                            contentEditable 
+                            suppressContentEditableWarning
+                            onBlur={(e) => handleCoverLetterEdit('bodyParagraphs', idx, e.target.innerText)}
+                          >
+                            {p}
+                          </div>
+                        ))}
+
+                        {/* Conclusion */}
+                        <div 
+                          className="letter-paragraph editable-field" 
+                          contentEditable 
+                          suppressContentEditableWarning
+                          onBlur={(e) => handleCoverLetterEdit('conclusion', null, e.target.innerText)}
+                        >
+                          {coverLetter.conclusion}
+                        </div>
+
+                        {/* Sign off */}
+                        <div 
+                          className="letter-signoff editable-field" 
+                          contentEditable 
+                          suppressContentEditableWarning
+                          onBlur={(e) => handleCoverLetterEdit('signOff', null, e.target.innerText)}
+                        >
+                          {coverLetter.signOff}
+                        </div>
+
+                        {/* Signature */}
+                        <div 
+                          className="letter-signature editable-field" 
+                          contentEditable 
+                          suppressContentEditableWarning
+                          onBlur={(e) => handleCoverLetterEdit('signature', null, e.target.innerText)}
+                        >
+                          {coverLetter.signature}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Download controls cover letter */}
+                    <div style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      gap: '1rem',
+                      marginTop: '1.5rem',
+                      flexWrap: 'wrap'
+                    }}>
+                      <button className="btn btn-primary" style={{ flexGrow: 1 }} onClick={downloadCoverLetterPdf}>
+                        <Download size={16} />
+                        Exportar PDF da Carta
+                      </button>
+                      <button className="btn btn-secondary" style={{ flexGrow: 1 }} onClick={downloadCoverLetterTxt}>
+                        <FileText size={16} />
+                        Exportar Texto Puro (TXT)
+                      </button>
+                      <button className="btn btn-secondary" style={{ width: '48px', padding: 0 }} onClick={handleGenerateCoverLetter} title="Regerar Carta de Apresentação">
+                        <Sparkles size={16} />
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
-            </div>
-          )}
+            )}
+          </div>
+        </div>
+      )}
         </div>
 
       </div>
@@ -1604,7 +2291,7 @@ function App() {
                     Otimizações Efetuadas
                   </div>
                   <div style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--color-text-primary)' }}>
-                    {optimizationsCount} nesta sessão
+                    {optimizationsCount} no total
                   </div>
                 </div>
               </div>
